@@ -1,0 +1,10 @@
+pandas
+datetime
+PyQt5.QtWidgets
+PyQt5.QtCore
+PyQt5.QtGui
+subprocess
+binance.client
+math
+os
+sys
