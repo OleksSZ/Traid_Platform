@@ -2,7 +2,8 @@ def calculate_optimal_leverage(
     entry_price: float,
     stop_price: float,
     margin_usd: float,
-    risk_dollar: float
+    risk_dollar: float,
+    
 ) -> int:
     """
     НОВАЯ ЛОГИКА:
@@ -28,5 +29,4 @@ def calculate_optimal_leverage(
         leverage = 1
     if leverage > 50:                                     # можно изменить на 75 или 100
         leverage = 50
-
     return leverage

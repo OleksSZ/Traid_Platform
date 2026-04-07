@@ -20,13 +20,12 @@ load_dotenv(dotenv_path='config.env')
 
 
 class OpenTradeDialog(QDialog):
-    def __init__(self, parent, pair, direction, entry, stop, take, leverage, risk_usd):
+    def __init__(self, parent, pair, direction, entry, stop, take, leverage, risk_usd, risk_percent=None):
         super().__init__(parent)
         self.setWindowTitle("🟢 Открытие позиции — Дневник трейдера")
         self.setMinimumWidth(780)
         self.setMinimumHeight(680)
 
-        # Применяем тот же стиль, что и у главного окна
         self.setStyleSheet(parent.styleSheet())
 
         self.pair = pair
@@ -36,6 +35,7 @@ class OpenTradeDialog(QDialog):
         self.take = float(take)
         self.leverage = leverage
         self.risk_usd = float(risk_usd)
+        self.risk_percent = float(risk_percent) if risk_percent is not None else None
         self.screenshot_path = None
 
         # Расчёт RR
@@ -69,7 +69,8 @@ class OpenTradeDialog(QDialog):
             ("Stop-Loss", f"{self.stop:.4f}"),
             ("Take-Profit", f"{self.take:.4f}"),
             ("Плечо", f"{self.leverage}x"),
-            ("Риск на сделку", f"${self.risk_usd}"),
+            ("Риск на сделку ($)", f"${self.risk_usd:.2f}"),
+            ("Риск % от депозита", f"{self.risk_percent:.2f}%" if self.risk_percent else "—"),
             ("RR Ratio", f"{self.rr:.2f}"),
             ("Потенциальная прибыль", f"+${self.potential_profit}"),
             ("Потенциальный убыток", f"${self.potential_loss}"),
@@ -81,7 +82,7 @@ class OpenTradeDialog(QDialog):
         info_gb.setLayout(grid)
         layout.addWidget(info_gb)
 
-        # Форма ввода
+        # Форма ввода дневника
         input_gb = QGroupBox("Дневник трейдера")
         form = QGridLayout()
 
@@ -149,6 +150,8 @@ class OpenTradeDialog(QDialog):
             'rr_ratio': round(self.rr, 4),
             'potential_profit': self.potential_profit,
             'potential_loss': self.potential_loss,
+            'risk_usd': round(self.risk_usd, 2),
+            'risk_percent': round(self.risk_percent, 2) if self.risk_percent else None,
             'reason_entry': self.reason_input.toPlainText().strip(),
             'fear_greed': self.fg_spin.value(),
             'profit_shans': self.shans_spin.value(),
@@ -160,7 +163,7 @@ class TraderGUI:
     def __init__(self):
         self.app = QApplication(sys.argv)
 
-        # Стиль оформления (твой оригинальный + небольшие улучшения)
+        # Стиль оформления
         self.app.setStyleSheet("""
             QWidget {
                 background-color: black;
@@ -230,6 +233,15 @@ class TraderGUI:
         self.take_input = QLineEdit()
         layout.addWidget(self.take_input)
 
+        # === Новый параметр: Процент риска от депозита ===
+        layout.addWidget(QLabel("Процент риска от депозита (%):"))
+        self.risk_percent_input = QLineEdit("1.0")
+        layout.addWidget(self.risk_percent_input)
+
+        layout.addWidget(QLabel("Или риск на сделку ($) :"))
+        self.risk_input = QLineEdit("100")
+        layout.addWidget(self.risk_input)
+
         # Кнопка Freqtrade
         freqtrade_button = QPushButton("🚀 Открыть Freqtrade Constructor (Streamlit)")
         freqtrade_button.setStyleSheet("""
@@ -238,10 +250,6 @@ class TraderGUI:
         """)
         freqtrade_button.clicked.connect(self.open_freqtrade_interface)
         layout.addWidget(freqtrade_button)
-
-        layout.addWidget(QLabel("Желаемый убыток / Риск на сделку ($) :"))
-        self.risk_input = QLineEdit("100")
-        layout.addWidget(self.risk_input)
 
         # Основные кнопки
         open_button = QPushButton("Открыть позицию (проверить условия)")
@@ -275,12 +283,19 @@ class TraderGUI:
         self.monitor_timer.timeout.connect(self.monitor_trades)
 
     def _load_saved_risk(self):
+        # Загружаем процент риска
+        saved_percent = os.getenv('RISK_PERCENT')
+        if saved_percent:
+            try:
+                self.risk_percent_input.setText(f"{float(saved_percent):.2f}")
+            except:
+                self.risk_percent_input.setText("1.0")
+
+        # Загружаем риск в долларах
         saved_risk = os.getenv('RISK_PER_TRADE_USD')
         if saved_risk:
             try:
-                val = float(saved_risk)
-                if val > 0:
-                    self.risk_input.setText(f"{val:.2f}")
+                self.risk_input.setText(f"{float(saved_risk):.2f}")
             except:
                 self.risk_input.setText("100")
 
@@ -316,16 +331,19 @@ class TraderGUI:
             entry = float(self.entry_input.text())
             stop = float(self.stop_input.text())
             take = float(self.take_input.text())
+            risk_percent = float(self.risk_percent_input.text())
             risk_usd = float(self.risk_input.text())
-            if risk_usd <= 0:
-                raise ValueError()
-        except ValueError:
+
+            if risk_percent <= 0 or risk_usd <= 0:
+                raise ValueError("Риск должен быть положительным")
+        except ValueError as e:
             QMessageBox.warning(self.window, "Ошибка ввода", 
                                 "Все числовые поля должны быть положительными числами!")
             return
 
-        # Сохраняем риск
+        # Сохраняем настройки в .env
         try:
+            set_key('config.env', 'RISK_PERCENT', str(risk_percent))
             set_key('config.env', 'RISK_PER_TRADE_USD', str(risk_usd))
         except:
             pass
@@ -345,8 +363,10 @@ class TraderGUI:
             if reply == QMessageBox.No:
                 return
 
-        # Открываем красивое модальное окно
-        dialog = OpenTradeDialog(self.window, pair, direction, entry, stop, take, leverage, risk_usd)
+        # Открываем модальное окно
+        dialog = OpenTradeDialog(
+            self.window, pair, direction, entry, stop, take, leverage, risk_usd, risk_percent
+        )
         
         if dialog.exec_() == QDialog.Accepted:
             trade_data = dialog.get_data()
@@ -360,13 +380,13 @@ class TraderGUI:
                 fear_greed=trade_data['fear_greed'],
                 direction=direction,
                 leverage=leverage,
-                risk_dollar=risk_usd
+                risk_dollar=risk_usd,
+                risk_percent=risk_percent   # ← Новый параметр
             )
 
             self.log_output.append(message)
 
             if success:
-                # Сохраняем дополнительные данные в Excel
                 screenshot = trade_data.get('skrin_grafik')
                 # insert_open_trade(trade_data, screenshot)
                 self.log_output.append(f"✅ Сделка записана в trade_journal.xlsx")
@@ -395,7 +415,7 @@ class TraderGUI:
         dialog.setLayout(layout)
         if dialog.exec_() == QDialog.Accepted:
             selected = combo.currentText()
-            pair = selected.split(' ')[0]   # берём только пару
+            pair = selected.split(' ')[0]
 
             reason_close, ok = QInputDialog.getText(self.window, "Дневник", "Причина закрытия:")
             if not ok or not reason_close.strip():
