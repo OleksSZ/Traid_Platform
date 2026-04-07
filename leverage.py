@@ -1,32 +1,26 @@
-def calculate_optimal_leverage(
-    entry_price: float,
-    stop_price: float,
-    margin_usd: float,
-    risk_dollar: float,
-    
-) -> int:
+from parcer import get_usdt_balance
+
+
+def calculate_optimal_leverage(entry, stop, risk_usd, risk_percent):
     """
-    НОВАЯ ЛОГИКА:
-    Подбирает плечо так, чтобы при срабатывании стопа потеря была ровно risk_dollar.
+    balance (B) - депозит
+    percent (p) - % от баланса на сделку
+    entry - цена входа
+    stop - цена стопа
+    desired_loss (L) - желаемый убыток ($)
     """
-    if margin_usd <= 0 or risk_dollar <= 0:
-        raise ValueError("Маржа и риск должны быть положительными")
+    balance_data = get_usdt_balance()
 
-    distance = abs(entry_price - stop_price)
-    if distance == 0:
-        raise ValueError("Цена входа и стоп не могут быть одинаковыми")
+    if not balance_data:
+        raise Exception("Не удалось получить баланс")
 
-    stop_pct = distance / entry_price                     # расстояние до стопа в %
+    balance = balance_data["available"]
 
-    # Основная формула
-    leverage_float = risk_dollar / (margin_usd * stop_pct)
+    positionSize = balance * (risk_percent / 100)
+    qty = positionSize / entry
+    riskPerUnit = abs(entry - stop)
+    actualLoss = qty * riskPerUnit
 
-    # Округляем до целого
-    leverage = round(leverage_float)
+    leverage = risk_usd / actualLoss
 
-    # Защита от нереалистичных значений
-    if leverage < 1:
-        leverage = 1
-    if leverage > 50:                                     # можно изменить на 75 или 100
-        leverage = 50
-    return leverage
+    return  round(leverage)

@@ -350,7 +350,7 @@ class TraderGUI:
 
         # Расчёт плеча
         try:
-            leverage = calculate_optimal_leverage(entry, stop, risk_usd)
+            leverage = calculate_optimal_leverage(entry, stop, risk_usd, risk_percent)
             self.log_output.append(f"→ Рассчитанное плечо: {leverage}x")
         except Exception as e:
             QMessageBox.warning(self.window, "Ошибка расчёта плеча", str(e))

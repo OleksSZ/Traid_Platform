@@ -3,7 +3,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from binance.client import Client
 
-# Новые импорты из database
+# Импорты из database
 from database import init_journal, insert_open_trade, close_trade, get_open_positions
 
 from checks import check_rr, get_position_size
@@ -33,8 +33,13 @@ class Trader:
         fear_greed: int,
         direction: str = 'long',
         leverage: int = None,
-        risk_dollar: float = None
+        risk_dollar: float = None,
+        risk_percent: float = None   # ← Новый параметр
     ):
+        """
+        Открытие позиции с поддержкой риска в процентах от депозита
+        """
+        # Проверка RR
         ok, msg, risk, reward = check_rr(entry, stop, take, direction)
         if not ok:
             return False, msg
@@ -43,9 +48,9 @@ class Trader:
             return False, "Плечо не передано или некорректно"
 
         if risk_dollar is None or risk_dollar <= 0:
-            return False, "Риск в $ не передан"
+            return False, "Риск в долларах не передан"
 
-        # Расчёт размера позиции
+        # Расчёт размера позиции (используем risk_dollar)
         quantity, calc_leverage, margin_pct, real_risk_pct, msg = get_position_size(
             self.client, pair, entry, stop, direction, risk_dollar=risk_dollar
         )
@@ -58,14 +63,14 @@ class Trader:
         potential_loss = risk * quantity
 
         try:
-            # Устанавливаем плечо
+            # Устанавливаем плечо на фьючерсах
             self.client.futures_change_leverage(symbol=pair, leverage=leverage_to_use)
 
             position_side = 'LONG' if direction == 'long' else 'SHORT'
             open_side = 'BUY' if direction == 'long' else 'SELL'
             close_side = 'SELL' if direction == 'long' else 'BUY'
 
-            # 1. Лимитный ордер на вход (обычный)
+            # 1. Лимитный ордер на вход
             entry_order = self.client.futures_create_order(
                 symbol=pair,
                 side=open_side,
@@ -76,36 +81,36 @@ class Trader:
                 positionSide=position_side
             )
 
-            # 2. Stop-Loss через Algo Order (используем triggerPrice!)
+            # 2. Stop-Loss (Conditional Algo Order)
             self.client.futures_create_algo_order(
                 algoType='CONDITIONAL',
                 symbol=pair,
                 side=close_side,
                 type='STOP_MARKET',
                 quantity=quantity,
-                triggerPrice=stop,           # ← Вот главный параметр
+                triggerPrice=stop,
                 timeInForce='GTC',
                 positionSide=position_side,
-                workingType='CONTRACT_PRICE' # или 'MARK_PRICE' по желанию
+                workingType='CONTRACT_PRICE'
             )
 
-            # 3. Take-Profit через Algo Order
+            # 3. Take-Profit (Conditional Algo Order)
             self.client.futures_create_algo_order(
                 algoType='CONDITIONAL',
                 symbol=pair,
                 side=close_side,
                 type='TAKE_PROFIT_MARKET',
                 quantity=quantity,
-                triggerPrice=take,           # ← Вот главный параметр
+                triggerPrice=take,
                 timeInForce='GTC',
                 positionSide=position_side,
                 workingType='CONTRACT_PRICE'
             )
 
-            # Данные для Excel
+            # === Данные для сохранения в Excel ===
             trade_data = {
                 'pair': pair,
-                'direction': direction,
+                'direction': direction.upper(),
                 'entry_price': entry,
                 'stop_loss': stop,
                 'take_profit': take,
@@ -115,16 +120,20 @@ class Trader:
                 'potential_loss': round(potential_loss, 2),
                 'reason_entry': reason_entry,
                 'fear_greed': fear_greed,
-                'profit_shans': 0,
+                'profit_shans': 65,                    # можно сделать динамическим позже
                 'tradingview_link': None,
+                'risk_dollar': round(risk_dollar, 2),
+                'risk_percent': round(risk_percent, 2) if risk_percent is not None else None,  # ← Здесь сохраняем процент
+                'real_risk_pct': round(real_risk_pct, 4) if 'real_risk_pct' in locals() else None,
             }
 
             trade_id = insert_open_trade(trade_data)
 
             return True, (
-                f"✅ Ордер успешно отправлен ({direction.upper()}) ID:{trade_id}\n"
+                f"✅ Ордер успешно отправлен ({direction.upper()}) | ID: {trade_id}\n"
                 f"Плечо: {leverage_to_use}x | Кол-во: {quantity:.6f}\n"
-                f"Stop-Loss и Take-Profit созданы (Algo Order)"
+                f"Риск: ${risk_dollar:.2f} ({risk_percent:.2f}% от депозита)\n"
+                f"Stop-Loss и Take-Profit созданы через Algo Order"
             )
 
         except Exception as e:
@@ -132,6 +141,7 @@ class Trader:
             if "position side" in error_str.lower():
                 error_str += "\n\nРекомендация: Переключи Position Mode → One-way Mode в настройках Binance Futures."
             return False, f"❌ Ошибка открытия позиции: {error_str}"
+
     def close_trade(self, pair: str, reason_close: str):
         """Закрытие позиции по рынку + обновление журнала"""
         try:
@@ -151,16 +161,12 @@ class Trader:
                 quantity=quantity
             )
 
-            # Получаем реализованный PnL из последней сделки
+            # Получаем реализованный PnL
             trades = self.client.futures_account_trade_list(symbol=pair, limit=5)
-            pnl = 0.0
-            if trades:
-                # Берём самую свежую реализованную прибыль
-                pnl = float(trades[0].get('realizedPnl', 0))
+            pnl = float(trades[0].get('realizedPnl', 0)) if trades else 0.0
 
-            # Обновляем Excel
-            success = close_trade(trade_id=None, pnl=pnl, reason_close=reason_close, pair=pair)
-            # Если close_trade принимает pair вместо id — нужно будет подправить в database.py
+            # Обновляем журнал
+            success = close_trade(pair=pair, pnl=pnl, reason_close=reason_close)
 
             return True, f"✅ Позиция закрыта по рынку. PnL: {pnl:.2f} USDT | Причина: {reason_close}"
 
@@ -195,25 +201,13 @@ class Trader:
                     direction = "Long" if amt > 0 else "Short"
                     pnl = float(pos['unRealizedProfit'])
                     entry = float(pos['entryPrice'])
-                    info += f"{symbol} ({direction}) | PnL: {pnl:.2f} | Вход: {entry}\n"
+                    info += f"{symbol} ({direction}) | PnL: {pnl:.2f} | Вход: {entry:.4f}\n"
             return info or "Нет активных позиций."
         except Exception as e:
             return f"Ошибка мониторинга: {e}"
-        
-        
-    def get_usdt_balance(self):
-        try:
-            balance_info = self.client.futures_account_balance()
-            for b in balance_info:
-                if b['asset'] == 'USDT':
-                    return float(b['balance'])
-            return 0.0
-        except Exception as e:
-            print(f"Ошибка баланса: {e}")
-            return 0.0
 
     def check_closed_trades(self):
         """Проверка закрытых позиций на бирже и обновление журнала"""
         print("Проверка закрытых сделок на Binance...")
-        # Можно доработать позже, если нужно автоматически находить закрытые сделки
+        # Можно доработать позже
         pass
