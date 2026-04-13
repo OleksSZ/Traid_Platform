@@ -1,0 +1,12 @@
+{
+    "min_buy_votes": 1,
+    "min_sell_votes": 1,
+    "use_rsi": true,
+    "rsi_buy": 20,
+    "rsi_sell": 50,
+    "use_macd": false,
+    "use_ema": false,
+    "use_bb": false,
+    "use_adx": false,
+    "use_stoch": false
+}
