@@ -1,17 +1,48 @@
-import streamlit as st
-import subprocess
+import sys
 import os
+import subprocess
+import streamlit as st
 import pandas as pd
 import json
+import psutil
 from datetime import datetime
 
-# ====================== НАСТРОЙКИ ======================
+# ====================== TELEGRAM НАСТРОЙКИ ======================
+TELEGRAM_TOKEN = "8736878634:AAFsQyL8z7hu0gq3n6Yrq43d_fsKHFMcfac"
+TELEGRAM_CHAT_ID = "1420484889"
+
+def send_telegram(message: str):
+    """Простая отправка сообщения в Telegram"""
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        requests.post(url, json=payload, timeout=10)
+        print(f"[TG] Отправлено: {message[:100]}...")
+    except Exception as e:
+        print(f"[TG ERROR] {e}")
+
+# ====================== ИНИЦИАЛИЗАЦИЯ ======================
 st.set_page_config(page_title="Freqtrade Interface", layout="wide")
 st.title("🚀 Freqtrade Interface — Главное управление")
 st.markdown("---")
 
-tab_strategy, tab_data, tab_run = st.tabs(["📊 Настройка Стратегий", "📥 Данные Binance", "▶️ Запуск Бэктеста"])
+if 'freqtrade_running' not in st.session_state:
+    st.session_state.freqtrade_running = False
+
 VENV_PYTHON = r"D:\Trading\freqtrade\.venv\Scripts\python.exe"
+
+# ====================== ВКЛАДКИ ======================
+tab_strategy, tab_data, tab_backtest, tab_live_signals = st.tabs([
+    "📊 Настройка Стратегий",
+    "📥 Данные Binance",
+    "▶️ Запуск Бэктеста",
+    "📡 Реальная торговля (сигналы в TG)"
+])
 
 # ====================== ВКЛАДКА 1: НАСТРОЙКА СТРАТЕГИЙ ======================
 with tab_strategy:
@@ -20,14 +51,12 @@ with tab_strategy:
 
     json_path = "user_data/strategies/strategy_settings.json"
 
-    # Загружаем текущие настройки
     if os.path.exists(json_path):
         with open(json_path, "r", encoding="utf-8") as f:
             current = json.load(f)
     else:
         current = {}
 
-    # Общие настройки
     st.subheader("Общие настройки голосования")
     col1, col2 = st.columns(2)
     with col1:
@@ -35,7 +64,6 @@ with tab_strategy:
     with col2:
         min_sell_votes = st.slider("Минимум голосов для выхода (Sell)", 1, 6, current.get("min_sell_votes", 3))
 
-    # Стратегии
     st.subheader("Стратегии и их параметры")
 
     strategies = {
@@ -47,10 +75,7 @@ with tab_strategy:
         "Stochastic": {"use": "use_stoch", "k": "stoch_k", "d": "stoch_d", "buy": "stoch_buy"},
     }
 
-    settings = {
-        "min_buy_votes": min_buy_votes,
-        "min_sell_votes": min_sell_votes
-    }
+    settings = {"min_buy_votes": min_buy_votes, "min_sell_votes": min_sell_votes}
 
     for name, keys in strategies.items():
         with st.expander(f"🔹 {name}", expanded=True):
@@ -79,15 +104,14 @@ with tab_strategy:
                     settings[keys["d"]] = st.slider("Stoch %D", 3, 10, current.get(keys["d"], 3))
                     settings[keys["buy"]] = st.slider("Stoch Buy уровень", 5, 35, current.get(keys["buy"], 20))
 
-    # Кнопка сохранения
     if st.button("💾 Сохранить настройки стратегии", type="primary"):
         os.makedirs(os.path.dirname(json_path), exist_ok=True)
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=4, ensure_ascii=False)
-        st.success("✅ Настройки успешно сохранены в strategy_settings.json")
+        st.success("✅ Настройки успешно сохранены!")
         st.balloons()
 
-# ====================== ВКЛАДКА 2: ДАННЫЕ ======================
+# ====================== ВКЛАДКА 2: ДАННЫЕ BINANCE ======================
 with tab_data:
     st.header("📥 Управление данными Binance")
 
@@ -126,7 +150,7 @@ with tab_data:
                     st.code(result.stderr[-2000:] or result.stdout)
 
 # ====================== ВКЛАДКА 3: ЗАПУСК БЭКТЕСТА ======================
-with tab_run:
+with tab_backtest:
     st.header("▶️ Запуск бэктеста")
 
     col_a, col_b = st.columns([2, 1])
@@ -159,7 +183,6 @@ with tab_run:
             if result.returncode == 0:
                 st.success("✅ Бэктест успешно завершён!")
 
-                # Поиск самого свежего zip-файла
                 results_dir = os.path.join(os.getcwd(), "user_data", "backtest_results")
                 
                 if os.path.exists(results_dir):
@@ -180,7 +203,6 @@ with tab_run:
                                     
                                     strategy_data = data.get("strategy", {}).get("CombinedConstructorStrategy", {})
 
-                                    # ====================== ТАБЛИЦА СО СДЕЛКАМИ ======================
                                     trades = strategy_data.get("trades", [])
                                     if trades:
                                         df = pd.DataFrame(trades)
@@ -200,35 +222,18 @@ with tab_run:
                                     else:
                                         st.warning("Сделок не найдено")
 
-                                    # ====================== ОБЩАЯ СТАТИСТИКА (как в консоли) ======================
                                     st.subheader("📈 Общая статистика бэктеста")
-                                    
                                     col1, col2 = st.columns(2)
-                                    
                                     with col1:
                                         st.metric("Всего сделок", len(trades))
                                         st.metric("Прибыль всего (USDT)", f"{strategy_data.get('profit_total_abs', 0):.2f}")
                                         st.metric("Прибыль %", f"{strategy_data.get('profit_total_pct', 0):.2f}%")
                                         st.metric("Win Rate", f"{strategy_data.get('winrate', 0):.1f}%")
-                                    
                                     with col2:
                                         st.metric("Макс. просадка (USDT)", f"{strategy_data.get('max_drawdown_abs', 0):.2f}")
                                         st.metric("Макс. просадка %", f"{strategy_data.get('max_relative_drawdown', 0):.2f}%")
                                         st.metric("Средняя длительность сделки", strategy_data.get('holding_avg', '0:00:00'))
                                         st.metric("Лучшая сделка %", f"{max([t.get('profit_ratio', 0) for t in trades] or [0]) * 100:.2f}%")
-
-                                    # Дополнительная информация
-                                    st.markdown("---")
-                                    st.write("**Дополнительные параметры:**")
-                                    info = {
-                                        "Стратегия": strategy_data.get("strategy_name"),
-                                        "Таймфрейм": strategy_data.get("timeframe"),
-                                        "Период тестирования": f"{strategy_data.get('backtest_start', '')} — {strategy_data.get('backtest_end', '')}",
-                                        "Начальный баланс": f"{strategy_data.get('starting_balance', 0):.2f} USDT",
-                                        "Финальный баланс": f"{strategy_data.get('final_balance', 0):.2f} USDT",
-                                        "Market Change": f"{strategy_data.get('market_change', 0):.2f}%"
-                                    }
-                                    st.dataframe(pd.DataFrame(list(info.items()), columns=["Параметр", "Значение"]), hide_index=True)
 
                         except Exception as e:
                             st.error(f"Ошибка обработки файла: {e}")
@@ -239,3 +244,79 @@ with tab_run:
             else:
                 st.error("❌ Ошибка при запуске бэктеста")
                 st.code(result.stderr or result.stdout)
+
+# ====================== ВКЛАДКА 4: РЕАЛЬНАЯ ТОРГОВЛЯ ======================
+with tab_live_signals:
+    st.header("📡 Реальная торговля — ТОЛЬКО СИГНАЛЫ В TELEGRAM")
+    st.success("**Dry-run режим**: сделки НЕ открываются автоматически")
+
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        pairs_input = st.text_input(
+            "Пары для мониторинга",
+            "BTC/USDT ETH/USDT SOL/USDT XRP/USDT ADA/USDT"
+        )
+        pairs = [p.strip().replace(" ", "/") for p in pairs_input.replace(",", " ").split() if p.strip()]
+
+    with col2:
+        tf = st.selectbox("Таймфрейм", ["1m", "5m", "15m", "30m", "1h", "4h"], index=2)
+
+    col_start, col_stop = st.columns(2)
+
+    with col_start:
+        if st.button("🚀 Запустить сигнальный бот", type="primary", use_container_width=True):
+            if not pairs:
+                st.error("Укажите хотя бы одну пару!")
+            else:
+                pair_str = " ".join(pairs)
+                cmd = [
+                    VENV_PYTHON, "-m", "freqtrade", "trade",
+                    "--strategy", "CombinedConstructorStrategy",
+                    "--config", "user_data/config.json",
+                    "--dry-run",
+                    "--pairs", pair_str,
+                    "--timeframe", tf,
+                    "--logfile", "user_data/logs/signals.log",
+                    "--verbosity", "info"
+                ]
+                try:
+                    process = subprocess.Popen(cmd, cwd=os.getcwd(), creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    st.session_state.freqtrade_running = True
+                    
+                    send_telegram(f"🚀 <b>Сигнальный бот запущен</b>\nПары: {len(pairs)}\nТФ: {tf}")
+                    
+                    st.success(f"✅ Бот запущен! | Пар: {len(pairs)} | TF: {tf}")
+                except Exception as e:
+                    st.error(f"Ошибка запуска: {e}")
+
+    with col_stop:
+        if st.button("⛔ Остановить сигнальный бот", type="secondary", use_container_width=True):
+            stopped = False
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    cmdline = proc.info['cmdline']
+                    if cmdline and 'freqtrade' in ' '.join(cmdline).lower() and 'trade' in ' '.join(cmdline).lower():
+                        proc.kill()
+                        stopped = True
+                except:
+                    pass
+            if stopped:
+                st.session_state.freqtrade_running = False
+                send_telegram("⛔ <b>Сигнальный бот остановлен</b>")
+                st.success("✅ Бот остановлен")
+            else:
+                st.warning("Активных процессов Freqtrade не найдено")
+
+    if st.session_state.freqtrade_running:
+        st.success("🟢 **Сигнальный бот работает** — проверяет рынок")
+    else:
+        st.info("🔴 Сигнальный бот остановлен")
+
+    st.caption("💡 Бот работает в dry-run режиме. Деньги не тратятся.")
+
+# ====================== БОКОВАЯ ПАНЕЛЬ ======================
+st.sidebar.markdown("---")
+st.sidebar.header("📲 Telegram")
+st.sidebar.info("Сигналы от Freqtrade приходят в Telegram (если настроено в config.json)")
+
+st.sidebar.caption("Freqtrade + Streamlit")
