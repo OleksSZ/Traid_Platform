@@ -14,7 +14,7 @@ from trader import Trader
 from database import init_journal, insert_open_trade, get_open_positions, close_trade
 from leverage import calculate_optimal_leverage
 import subprocess
-
+from checks import check_rr, get_position_size
 
 load_dotenv(dotenv_path='config.env')
 
@@ -23,9 +23,8 @@ class OpenTradeDialog(QDialog):
     def __init__(self, parent, pair, direction, entry, stop, take, leverage, risk_usd, risk_percent=None):
         super().__init__(parent)
         self.setWindowTitle("🟢 Открытие позиции — Дневник трейдера")
-        self.setMinimumWidth(780)
-        self.setMinimumHeight(680)
-
+        self.setMinimumWidth(800)
+        self.setMinimumHeight(700)
         self.setStyleSheet(parent.styleSheet())
 
         self.pair = pair
@@ -36,9 +35,10 @@ class OpenTradeDialog(QDialog):
         self.leverage = leverage
         self.risk_usd = float(risk_usd)
         self.risk_percent = float(risk_percent) if risk_percent is not None else None
-        self.screenshot_path = None
 
-        # Расчёт RR
+        # Проверка RR сразу
+        self.rr_ok, self.rr_message, self.risk, self.reward = check_rr(self.entry, self.stop, self.take, self.direction)
+
         if self.direction == "long":
             self.rr = (self.take - self.entry) / (self.entry - self.stop) if (self.entry - self.stop) != 0 else 0
         else:
@@ -53,15 +53,15 @@ class OpenTradeDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
 
-        # Заголовок
         title = QLabel(f"Открытие {self.pair} — {self.direction.upper()}")
         title.setStyleSheet("font-size: 26px; color: lime; font-weight: bold;")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        # Информация о сделке
+        # Параметры сделки
         info_gb = QGroupBox("Параметры сделки")
         grid = QGridLayout()
+
         rows = [
             ("Пара", self.pair),
             ("Направление", self.direction.capitalize()),
@@ -75,21 +75,28 @@ class OpenTradeDialog(QDialog):
             ("Потенциальная прибыль", f"+${self.potential_profit}"),
             ("Потенциальный убыток", f"${self.potential_loss}"),
         ]
+
         for i, (label, value) in enumerate(rows):
             grid.addWidget(QLabel(f"<b>{label}:</b>"), i, 0)
-            grid.addWidget(QLabel(f"<b style='color:lime'>{value}</b>"), i, 1)
+            color = "lime" if self.rr_ok else "red"
+            grid.addWidget(QLabel(f"<b style='color:{color}'>{value}</b>"), i, 1)
 
         info_gb.setLayout(grid)
         layout.addWidget(info_gb)
 
-        # Форма ввода дневника
+        if not self.rr_ok:
+            warning = QLabel(f"⚠️ {self.rr_message}")
+            warning.setStyleSheet("color: red; font-weight: bold; font-size: 15px;")
+            layout.addWidget(warning)
+
+        # Дневник трейдера
         input_gb = QGroupBox("Дневник трейдера")
         form = QGridLayout()
 
-        form.addWidget(QLabel("Причина входа *:"), 0, 0)
+        form.addWidget(QLabel("Причина входа:"), 0, 0)
         self.reason_input = QTextEdit()
-        self.reason_input.setPlaceholderText("Почему ты решил открыть эту позицию?")
-        self.reason_input.setMaximumHeight(100)
+        self.reason_input.setPlaceholderText("Почему ты решил открыть эту позицию? (необязательно)")
+        self.reason_input.setMaximumHeight(80)
         form.addWidget(self.reason_input, 0, 1)
 
         form.addWidget(QLabel("Fear & Greed (0-100):"), 1, 0)
@@ -98,21 +105,18 @@ class OpenTradeDialog(QDialog):
         self.fg_spin.setValue(50)
         form.addWidget(self.fg_spin, 1, 1)
 
-        form.addWidget(QLabel("Шанс на профит (profit_shans):"), 2, 0)
+        form.addWidget(QLabel("Шанс на профит (%):"), 2, 0)
         self.shans_spin = QSpinBox()
         self.shans_spin.setRange(0, 100)
         self.shans_spin.setValue(65)
         self.shans_spin.setSuffix("%")
         form.addWidget(self.shans_spin, 2, 1)
 
-        form.addWidget(QLabel("Скриншот графика:"), 3, 0)
-        self.screenshot_btn = QPushButton("📸 Выбрать скриншот")
-        self.screenshot_btn.clicked.connect(self._choose_screenshot)
-        form.addWidget(self.screenshot_btn, 3, 1)
-
-        self.file_label = QLabel("Скриншот не выбран")
-        self.file_label.setStyleSheet("color: #888;")
-        form.addWidget(self.file_label, 4, 1)
+        # Новое поле — ссылка на TradingView
+        form.addWidget(QLabel("Ссылка на TradingView:"), 3, 0)
+        self.tv_link_input = QLineEdit()
+        self.tv_link_input.setPlaceholderText("https://www.tradingview.com/chart/... (необязательно)")
+        form.addWidget(self.tv_link_input, 3, 1)
 
         input_gb.setLayout(form)
         layout.addWidget(input_gb)
@@ -123,20 +127,16 @@ class OpenTradeDialog(QDialog):
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
-    def _choose_screenshot(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите скриншот графика", "",
-            "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
-        )
-        if path:
-            self.screenshot_path = path
-            self.file_label.setText(os.path.basename(path))
-            self.file_label.setStyleSheet("color: lime;")
-
     def _validate(self):
-        if not self.reason_input.toPlainText().strip():
-            QMessageBox.warning(self, "Ошибка", "Причина входа обязательна!")
-            return
+        # Проверка RR перед отправкой
+        ok, msg, _, _ = check_rr(self.entry, self.stop, self.take, self.direction)
+        if not ok:
+            QMessageBox.warning(self, "Ошибка RR", msg)
+            return  # Не закрываем окно
+        # if not self.reason_input.toPlainText().strip():
+        #     QMessageBox.warning(self, "Ошибка", "Причина входа обязательна!")
+        #     return  #Часть отвещающая за обязательную проверку причыны входа ( Что там что-то есть в поле )
+
         self.accept()
 
     def get_data(self):
@@ -155,9 +155,8 @@ class OpenTradeDialog(QDialog):
             'reason_entry': self.reason_input.toPlainText().strip(),
             'fear_greed': self.fg_spin.value(),
             'profit_shans': self.shans_spin.value(),
-            'skrin_grafik': self.screenshot_path,
+            'tradingview_link': self.tv_link_input.text().strip() or None,
         }
-
 
 class TraderGUI:
     def __init__(self):
@@ -336,12 +335,12 @@ class TraderGUI:
 
             if risk_percent <= 0 or risk_usd <= 0:
                 raise ValueError("Риск должен быть положительным")
-        except ValueError as e:
+        except ValueError:
             QMessageBox.warning(self.window, "Ошибка ввода", 
                                 "Все числовые поля должны быть положительными числами!")
             return
 
-        # Сохраняем настройки в .env
+        # Сохраняем настройки риска
         try:
             set_key('config.env', 'RISK_PERCENT', str(risk_percent))
             set_key('config.env', 'RISK_PER_TRADE_USD', str(risk_usd))
@@ -376,20 +375,25 @@ class TraderGUI:
                 entry=entry,
                 stop=stop,
                 take=take,
-                reason_entry=trade_data['reason_entry'],
-                fear_greed=trade_data['fear_greed'],
+                reason_entry=trade_data.get('reason_entry', ''),
+                fear_greed=trade_data.get('fear_greed', 50),
                 direction=direction,
                 leverage=leverage,
                 risk_dollar=risk_usd,
-                risk_percent=risk_percent   # ← Новый параметр
+                risk_percent=risk_percent
             )
 
             self.log_output.append(message)
 
             if success:
-                screenshot = trade_data.get('skrin_grafik')
-                # insert_open_trade(trade_data, screenshot)
-                self.log_output.append(f"✅ Сделка записана в trade_journal.xlsx")
+                try:
+                    # Сохраняем только в Excel-таблицу (без Telegram)
+                    insert_open_trade(trade_data)
+                    self.log_output.append(f"✅ Позиция успешно записана в trade_journal.xlsx")
+                except Exception as e:
+                    self.log_output.append(f"⚠️ Ошибка сохранения в журнал: {e}")
+            else:
+                self.log_output.append("❌ Позиция не открыта")
         else:
             self.log_output.append("Открытие позиции отменено")
 

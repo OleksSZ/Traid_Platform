@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 from binance.client import Client
+import time
 
 # Импорты из database
 from database import init_journal, insert_open_trade, close_trade, get_open_positions
@@ -34,7 +35,7 @@ class Trader:
         direction: str = 'long',
         leverage: int = None,
         risk_dollar: float = None,
-        risk_percent: float = None   # ← Новый параметр
+        risk_percent: float = None 
     ):
         """
         Открытие позиции с поддержкой риска в процентах от депозита
@@ -42,7 +43,7 @@ class Trader:
         # Проверка RR
         ok, msg, risk, reward = check_rr(entry, stop, take, direction)
         if not ok:
-            return False, msg
+            return False, msg 
 
         if leverage is None or leverage < 1:
             return False, "Плечо не передано или некорректно"
@@ -143,52 +144,69 @@ class Trader:
             return False, f"❌ Ошибка открытия позиции: {error_str}"
 
     def close_trade(self, pair: str, reason_close: str):
-        """Закрытие позиции по рынку + обновление журнала"""
+        """Максимально надёжное закрытие позиции"""
         try:
-            position_info = self.client.futures_position_information(symbol=pair)[0]
-            amount = float(position_info['positionAmt'])
-            if amount == 0:
-                return False, "Нет открытой позиции по этой паре."
+            # Приводим пару к разным возможным форматам
+            symbol_clean = pair.replace('/', '').replace('-', '').upper()   # CAKEUSDT
+            symbol_with_slash = pair.replace('-', '/').upper()             # CAKE/USDT
 
-            close_side = 'SELL' if amount > 0 else 'BUY'
-            quantity = abs(amount)
+            print(f"[Close] Пытаемся закрыть: {pair} | Clean: {symbol_clean}")
+
+            # Получаем ВСЕ позиции (без фильтра по символу)
+            all_positions = self.client.futures_position_information()
+
+            position = None
+            for pos in all_positions:
+                pos_symbol = pos['symbol']
+                if pos_symbol == symbol_clean or pos_symbol == symbol_with_slash:
+                    amt = float(pos.get('positionAmt', 0))
+                    if amt != 0:
+                        position = pos
+                        break
+
+            if not position:
+                # Показываем все открытые позиции для отладки
+                open_symbols = [p['symbol'] for p in all_positions if float(p.get('positionAmt', 0)) != 0]
+                return False, f"Позиция {pair} не найдена.\nОткрытые позиции: {open_symbols}"
+
+            amt = float(position['positionAmt'])
+            symbol = position['symbol']
+            pos_side = position.get('positionSide', 'BOTH')
+
+            close_side = 'SELL' if amt > 0 else 'BUY'
+            quantity = abs(amt)
+
+            print(f"[Close] Найдена позиция: {symbol} | Amount: {amt} | Side: {pos_side}")
 
             # Закрываем по рынку
             close_order = self.client.futures_create_order(
-                symbol=pair,
+                symbol=symbol,
                 side=close_side,
                 type='MARKET',
-                quantity=quantity
+                quantity=quantity,
+                positionSide=pos_side
             )
 
-            # Получаем реализованный PnL
-            trades = self.client.futures_account_trade_list(symbol=pair, limit=5)
-            pnl = float(trades[0].get('realizedPnl', 0)) if trades else 0.0
-
-            # Обновляем журнал
-            success = close_trade(pair=pair, pnl=pnl, reason_close=reason_close)
-
-            return True, f"✅ Позиция закрыта по рынку. PnL: {pnl:.2f} USDT | Причина: {reason_close}"
+            return True, f"✅ Позиция {symbol} успешно закрыта по рынку.\nКоличество: {quantity} | Причина: {reason_close}"
 
         except Exception as e:
-            return False, f"❌ Ошибка закрытия позиции: {str(e)}"
-
+            return False, f"❌ Ошибка закрытия позиции {pair}: {str(e)}"
     def get_open_positions(self):
-        """Возвращает список открытых позиций для меню закрытия"""
+        """Простой список открытых позиций"""
         try:
             positions = self.client.futures_position_information()
             open_pos = []
             for pos in positions:
-                amt = float(pos['positionAmt'])
+                amt = float(pos.get('positionAmt', 0))
                 if amt != 0:
                     symbol = pos['symbol']
-                    direction = "Long" if amt > 0 else "Short"
+                    direction = "LONG" if amt > 0 else "SHORT"
                     open_pos.append(f"{symbol} ({direction})")
             return open_pos
         except Exception as e:
-            print(f"Ошибка получения открытых позиций: {e}")
+            print(f"Ошибка получения позиций: {e}")
             return []
-
+        
     def monitor_trades(self):
         """Мониторинг активных позиций"""
         try:
