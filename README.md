@@ -1,21 +1,110 @@
-gui.py - Основной файл с интерфейсом
-trader.py - файл который отвечает за передачу инфы на сервера binance
-leverage - расчет плеча ( Сделан криво ) 
-checks - просмотр оптимален ли RR ( 1к3) 
-database -  запись информации о сделках в Exel 
+[README.md](https://github.com/user-attachments/files/29994529/README.md)# High-Tech Trader — Binance Futures Trading Platform
 
+Гибридная торговая платформа для Binance Futures: Python-бэкенд с риск-менеджментом
+и учётом сделок + десктопный интерфейс на C# (WinForms), который управляет торговлей
+через Python-скрипты.
 
-Поскольку нету файла config.json то скрипт не будет запускаться 
-Пример config.json
-BINANCE_API_KEY=
-BINANCE_API_SECRET=
-RISK_PER_TRADE_USD='0.1'
-RISK_PERCENT='1.0'
+> ⚠️ **Disclaimer.** Проект работает с реальными фьючерсными ордерами на Binance.
+> Это авторский риск-инструмент для собственной торговли, а не финансовый совет и
+> не готовый продукт "из коробки". Используйте API-ключи с ограниченными правами
+> (без разрешения на вывод средств) и на свой риск.
 
+## Что делает проект
 
+- Открывает и закрывает позиции на Binance Futures с проверкой RR (risk/reward)
+  перед входом в сделку
+- Автоматически рассчитывает размер позиции и оптимальное плечо исходя из
+  риска в долларах/процентах от депозита
+- Ведёт журнал всех сделок (Excel), с историей open/close, PnL и причинами входа/выхода
+- Показывает live-стакан (order book) через WebSocket Binance
+- Мониторит открытые позиции и баланс в реальном времени
+- Управляется из desktop-приложения на C#, которое дергает Python-логику как
+  внешние процессы через JSON-мост
 
-Interface - создает  Web-интерфейс на streamlit  в котором можно взаимодействовать с freqtrade и бектестить стратегии 
-strategies/CombinedConstructorStrategy - сами стратегии для бектестов
-strategies/strategy_settings - json с данными стратегий (передаеться в CombinedConstructorStrategy)
-strategies/strategy_constructor_gui - ОТвечает за данные в json файле и  запоминание и редактирование данных стратегий 
-data/ - Исторические данные для Бектестов (Можно скачать во второй вкладе web интерфейса )
+## Архитектура
+
+```
+┌─────────────────────┐        JSON over stdio        ┌──────────────────────┐
+│   C# WinForms GUI    │ ─────────────────────────────▶│   cs_bridge.py        │
+│   (Form1, диалоги)   │◀───────────────────────────── │   (единая точка входа) │
+└─────────────────────┘                                 └───────────┬──────────┘
+                                                                      │
+                                        ┌─────────────────────────────┼─────────────────────┐
+                                        ▼                             ▼                     ▼
+                                 ┌─────────────┐             ┌───────────────┐      ┌───────────────┐
+                                 │  trader.py  │             │  leverage.py  │      │  parcer.py     │
+                                 │ (ордера)    │             │ (риск-менедж) │      │ (Binance API)  │
+                                 └──────┬──────┘             └───────────────┘      └───────────────┘
+                                        │
+                                        ▼
+                                 ┌─────────────┐
+                                 │ database.py │
+                                 │ (Excel-журнал сделок) │
+                                 └─────────────┘
+```
+
+C#-сторона ничего не знает о торговой логике — она просто вызывает
+`cs_bridge.py <action> <json_args>` и парсит JSON-ответ. Это позволяет
+менять логику расчётов и работы с биржей на Python-стороне, не трогая GUI.
+
+## Технологический стек
+
+**Python**
+- `python-binance` — работа с Binance Futures API
+- `pandas` — журнал сделок и агрегация данных
+- `PyQt5` + `websocket-client` — live order book (WebSocket)
+- `python-dotenv` — конфигурация через `.env`
+
+**C# / .NET**
+- WinForms (.NET) — десктопный интерфейс
+- `Newtonsoft.Json` — разбор ответов Python-моста
+
+## Структура репозитория
+
+| Файл | Назначение |
+|---|---|
+| `parcer.py` | Класс `BinanceAccount` — обёртка над Binance API, получение баланса |
+| `leverage.py` | Класс `RiskManager` — расчёт плеча исходя из риска |
+| `checks.py` | Проверка RR-ratio, расчёт размера позиции |
+| `trader.py` | Класс `Trader` — открытие/закрытие сделок, мониторинг позиций |
+| `database.py` | Класс `ExcelTradeJournal` — журнал сделок (Excel) |
+| `cs_bridge.py` | Точка входа для C# GUI — принимает action + JSON, возвращает JSON |
+| `orderbook_window.py` | Live order book через WebSocket (PyQt5) |
+| `Form1.cs`, `*.Dialog.cs` | Экраны C#-интерфейса |
+| `TraderService.cs`, `MonitorService.cs` | Вызов Python-скриптов из C# |
+
+## Установка и запуск
+
+### Python-бэкенд
+
+```bash
+pip install -r requirements.txt
+```
+
+Создайте файл `config.env` в корне проекта (не коммитить!):
+
+```env
+BINANCE_API_KEY=your_api_key
+BINANCE_API_SECRET=your_api_secret
+```
+
+Проверка работы моста:
+
+```bash
+python cs_bridge.py get_balance "{}"
+```
+
+### C# GUI
+
+Открыть решение в Visual Studio / `dotnet build`, убедиться, что путь до
+Python-скриптов (`SCRIPTS_FOLDER` в `Form1.cs`) указывает на папку с `.py`-файлами,
+и запустить `Program.cs`.
+
+## Дальнейшие планы
+
+- [ ] Перенести журнал сделок с Excel на PostgreSQL
+- [ ] Обернуть `cs_bridge.py` в полноценный REST API (FastAPI) вместо
+      вызова через subprocess
+- [ ] Docker-контейнер для Python-сервиса
+- [ ] Покрытие тестами (pytest) для риск-менеджмента и работы с журналом
+- [ ] CI (GitHub Actions): lint + тесты на каждый PR
