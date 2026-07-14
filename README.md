@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/29994529/README.md)# High-Tech Trader — Binance Futures Trading Platform
+ High-Tech Trader — Binance Futures Trading Platform
 
 Гибридная торговая платформа для Binance Futures: Python-бэкенд с риск-менеджментом
 и учётом сделок + десктопный интерфейс на C# (WinForms), который управляет торговлей
